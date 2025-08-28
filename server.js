@@ -74,7 +74,7 @@ app.post('/auth/google', async (req, res) => {
       refresh_token,
       scope,
       token_type,
-      expiry_date
+      expiry_date,
     } = tokens;
 
     // Check if refresh token was provided
@@ -90,7 +90,7 @@ app.post('/auth/google', async (req, res) => {
         refreshToken: refresh_token,
         tokenType: token_type,
         scope: scope,
-        expiresAt: expiry_date ? new Date(expiry_date).toISOString() : null
+        expiry_date: expiry_date ? expiry_date : null
       }
     });
 
