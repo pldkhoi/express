@@ -90,7 +90,7 @@ app.post('/auth/google', async (req, res) => {
         refreshToken: refresh_token,
         tokenType: token_type,
         scope: scope,
-        expiry_date: expiry_date ? expiry_date : null
+        expiryDate: expiry_date ? expiry_date : null
       }
     });
 
