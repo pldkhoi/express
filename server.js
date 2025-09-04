@@ -2,6 +2,7 @@ import express from 'express';
 import { OAuth2Client } from 'google-auth-library';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import axios from 'axios';
 
 // Load environment variables
 dotenv.config();
@@ -22,20 +23,26 @@ const oauth2Client = new OAuth2Client(
 // Health check endpoint
 app.get('/', (req, res) => {
   res.json({
-    message: 'Google OAuth Express Server is running!',
+    message: 'OAuth Express Server is running!',
     status: 'healthy',
     endpoints: {
-      'POST /auth/google': 'Exchange authorization code for tokens',
-      'POST /auth/refresh': 'Refresh access token using refresh token',
-      'POST /auth/validate': 'Validate access token',
-      'POST /auth/revoke': 'Revoke tokens',
-      'GET /auth/url': 'Get Google authorization URL'
+      // Google OAuth
+      'GET /auth/google/url': 'Get Google authorization URL',
+      'POST /auth/google': 'Exchange Google authorization code for tokens',
+      'POST /auth/google/refresh': 'Refresh Google access token using refresh token',
+      'POST /auth/google/validate': 'Validate Google access token',
+      'POST /auth/google/revoke': 'Revoke Google tokens',
+      
+      // Microsoft OAuth
+      'GET /auth/microsoft/url': 'Get Microsoft authorization URL',
+      'POST /auth/microsoft': 'Exchange Microsoft authorization code for tokens',
+      'POST /auth/microsoft/refresh': 'Refresh Microsoft access token using refresh token'
     }
   });
 });
 
 // Get Google authorization URL
-app.get('/auth/url', (req, res) => {
+app.get('/auth/google/url', (req, res) => {
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline', // Required for refresh tokens
     scope: [
@@ -105,7 +112,7 @@ app.post('/auth/google', async (req, res) => {
 });
 
 // Refresh access token using refresh token
-app.post('/auth/refresh', async (req, res) => {
+app.post('/auth/google/refresh', async (req, res) => {
   const { refreshToken } = req.body;
 
   if (!refreshToken) {
@@ -146,7 +153,7 @@ app.post('/auth/refresh', async (req, res) => {
 });
 
 // Validate access token
-app.post('/auth/validate', async (req, res) => {
+app.post('/auth/google/validate', async (req, res) => {
   const { accessToken } = req.body;
 
   if (!accessToken) {
@@ -182,7 +189,7 @@ app.post('/auth/validate', async (req, res) => {
 });
 
 // Revoke tokens
-app.post('/auth/revoke', async (req, res) => {
+app.post('/auth/google/revoke', async (req, res) => {
   const { token } = req.body;
 
   if (!token) {
@@ -206,6 +213,183 @@ app.post('/auth/revoke', async (req, res) => {
       success: false,
       error: 'Failed to revoke token',
       message: error.message
+    });
+  }
+});
+
+// Microsoft OAuth Endpoints using direct OAuth 2.0 calls
+
+// Get Microsoft authorization URL
+app.get('/auth/microsoft/url', (req, res) => {
+  const clientId = process.env.MICROSOFT_CLIENT_ID;
+  const tenantId = process.env.MICROSOFT_TENANT_ID || 'common';
+  const redirectUri = req.query.redirect_uri || 'http://localhost:3001/auth/microsoft/callback';
+  const state = req.query.state || 'default_state';
+
+  if (!clientId) {
+    return res.status(400).json({
+      success: false,
+      error: 'Microsoft Client ID not configured'
+    });
+  }
+
+  // Microsoft OAuth 2.0 authorization endpoint
+  const authorizationUrl = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
+  
+  const params = new URLSearchParams({
+    client_id: clientId,
+    response_type: 'code',
+    redirect_uri: redirectUri,
+    scope: 'openid profile email User.Read offline_access',
+    state: state,
+    response_mode: 'query'
+  });
+
+  const authUrl = `${authorizationUrl}?${params.toString()}`;
+
+  res.json({
+    success: true,
+    authUrl: authUrl,
+    instructions: 'Redirect user to this URL to get authorization code',
+    redirectUri: redirectUri,
+    state: state
+  });
+});
+
+// Exchange Microsoft authorization code for tokens
+app.post('/auth/microsoft', async (req, res) => {
+  const { code, redirectUri, state } = req.body;
+  const clientId = process.env.MICROSOFT_CLIENT_ID;
+  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
+  const tenantId = process.env.MICROSOFT_TENANT_ID || 'common';
+
+  if (!code) {
+    return res.status(400).json({
+      success: false,
+      error: 'Authorization code is required'
+    });
+  }
+
+  if (!clientId || !clientSecret) {
+    return res.status(500).json({
+      success: false,
+      error: 'Microsoft OAuth credentials not configured'
+    });
+  }
+
+  try {
+    // Microsoft OAuth 2.0 token endpoint
+    const tokenUrl = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+    
+    const tokenData = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code: code,
+      redirect_uri: redirectUri || 'http://localhost:3001/auth/microsoft/callback',
+      grant_type: 'authorization_code',
+      scope: 'openid profile email User.Read offline_access'
+    });
+
+    const response = await axios.post(tokenUrl, tokenData, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+
+    const tokens = response.data;
+    
+    // Calculate expiry date
+    const expiryDate = new Date(Date.now() + (tokens.expires_in * 1000));
+    
+    res.json({
+      success: true,
+      message: 'Successfully authenticated with Microsoft!',
+      data: {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        tokenType: tokens.token_type || 'Bearer',
+        scope: tokens.scope,
+        expiryDate: expiryDate.toISOString(),
+        expiresIn: tokens.expires_in,
+        idToken: tokens.id_token,
+        state: state
+      }
+    });
+
+  } catch (error) {
+    console.error('Error exchanging Microsoft code for tokens:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to exchange authorization code',
+      message: error.response?.data?.error_description || error.message,
+      details: error.response?.data
+    });
+  }
+});
+
+// Refresh Microsoft access token using refresh token
+app.post('/auth/microsoft/refresh', async (req, res) => {
+  const { refreshToken } = req.body;
+  const clientId = process.env.MICROSOFT_CLIENT_ID;
+  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
+
+  if (!refreshToken) {
+    return res.status(400).json({
+      success: false,
+      error: 'Refresh token is required'
+    });
+  }
+
+  if (!clientId || !clientSecret) {
+    return res.status(500).json({
+      success: false,
+      error: 'Microsoft OAuth credentials not configured'
+    });
+  }
+
+  try {
+    // Microsoft OAuth 2.0 token endpoint for refresh
+    const tokenUrl = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+    
+    const tokenData = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+      scope: 'openid profile email User.Read offline_access'
+    });
+
+    const response = await axios.post(tokenUrl, tokenData, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+
+    const tokens = response.data;
+    
+    // Calculate expiry date
+    const expiryDate = new Date(Date.now() + (tokens.expires_in * 1000));
+
+    res.json({
+      success: true,
+      message: 'Microsoft access token refreshed successfully!',
+      data: {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token || refreshToken, // Some responses don't include new refresh token
+        tokenType: tokens.token_type || 'Bearer',
+        expiryDate: expiryDate.toISOString(),
+        expiresIn: tokens.expires_in,
+        scope: tokens.scope
+      }
+    });
+
+  } catch (error) {
+    console.error('Error refreshing Microsoft access token:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to refresh access token',
+      message: error.response?.data?.error_description || error.message,
+      details: error.response?.data
     });
   }
 });
@@ -234,13 +418,23 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}`);
-  console.log(`🔗 Get auth URL: http://localhost:${PORT}/auth/url`);
+  console.log(`🔗 Google auth URL: http://localhost:${PORT}/auth/google/url`);
+  console.log(`🔗 Microsoft auth URL: http://localhost:${PORT}/auth/microsoft/url`);
   
+  // Google OAuth warnings
   if (!process.env.GOOGLE_CLIENT_ID) {
     console.warn('⚠️  Warning: GOOGLE_CLIENT_ID not set in environment variables');
   }
   if (!process.env.GOOGLE_CLIENT_SECRET) {
     console.warn('⚠️  Warning: GOOGLE_CLIENT_SECRET not set in environment variables');
+  }
+  
+  // Microsoft OAuth warnings
+  if (!process.env.MICROSOFT_CLIENT_ID) {
+    console.warn('⚠️  Warning: MICROSOFT_CLIENT_ID not set in environment variables');
+  }
+  if (!process.env.MICROSOFT_CLIENT_SECRET) {
+    console.warn('⚠️  Warning: MICROSOFT_CLIENT_SECRET not set in environment variables');
   }
 });
 
