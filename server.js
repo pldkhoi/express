@@ -61,7 +61,7 @@ app.get('/auth/google/url', (req, res) => {
 });
 
 // Exchange authorization code for tokens
-app.post('/auth/google', async (req, res) => {
+app.post('/auth/google/v2', async (req, res) => {
   const { code } = req.body;
 
   if (!code) {
@@ -107,6 +107,78 @@ app.post('/auth/google', async (req, res) => {
       success: false,
       error: 'Failed to exchange authorization code',
       message: error.message
+    });
+  }
+});
+
+app.post('/auth/google', async (req, res) => {
+  const { code, redirectUri } = req.body;
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+  if (!code) {
+    return res.status(400).json({
+      success: false,
+      error: 'Authorization code is required'
+    });
+  }
+
+  if (!clientId || !clientSecret) {
+    return res.status(500).json({
+      success: false,
+      error: 'Google OAuth credentials not configured'
+    });
+  }
+
+  try {
+    // Google OAuth 2.0 token endpoint
+    const tokenUrl = 'https://oauth2.googleapis.com/token';
+    
+    const tokenData = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code: code,
+      redirect_uri: redirectUri || 'postmessage', // Use 'postmessage' as default for server-side flow
+      grant_type: 'authorization_code'
+    });
+
+    const response = await axios.post(tokenUrl, tokenData, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+
+    const tokens = response.data;
+    
+    // Calculate expiry date
+    const expiryDate = tokens.expires_in ? new Date(Date.now() + (tokens.expires_in * 1000)) : null;
+
+    // Check if refresh token was provided
+    if (!tokens.refresh_token) {
+      console.warn('No refresh token received. User may have already authorized this app.');
+    }
+
+    res.json({
+      success: true,
+      message: 'Successfully authenticated with Google!',
+      data: {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        tokenType: tokens.token_type || 'Bearer',
+        scope: tokens.scope,
+        expiryDate: expiryDate ? expiryDate.toISOString() : null,
+        expiresIn: tokens.expires_in,
+        idToken: tokens.id_token
+      }
+    });
+
+  } catch (error) {
+    console.error('Error exchanging Google code for tokens:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to exchange authorization code',
+      message: error.response?.data?.error_description || error.message,
+      details: error.response?.data
     });
   }
 });
@@ -287,7 +359,7 @@ app.post('/auth/microsoft', async (req, res) => {
       code: code,
       redirect_uri: redirectUri || 'http://localhost:3001/auth/microsoft/callback',
       grant_type: 'authorization_code',
-      scope: 'openid profile email User.Read offline_access'
+      scope: 'https://graph.microsoft.com/Calendars.Read offline_access'
     });
 
     const response = await axios.post(tokenUrl, tokenData, {
